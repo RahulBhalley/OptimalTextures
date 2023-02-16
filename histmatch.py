@@ -31,16 +31,20 @@ def hist_match(target, source, mode="pca", eps=1e-2):
 
         elif mode == "pca":
             eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+            # eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
-            eva_s, eve_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
+            # eva_s, eve_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
+            eva_s, eve_s = torch.linalg.eigh(cov_s, UPLO='U')
             Qs = eve_s @ torch.sqrt(torch.diag(eva_s)) @ eve_s.T
             matched = Qs @ torch.inverse(Qt) @ hist_t
 
         elif mode == "sym":
-            eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+            # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+            eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
             Qt_Cs_Qt = Qt @ cov_s @ Qt
-            eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, eigenvectors=True, upper=True)
+            # eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, eigenvectors=True, upper=True)
+            eva_QtCsQt, eve_QtCsQt = torch.linalg.eigh(Qt_Cs_Qt, UPLO='U')
             QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
             matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
 
