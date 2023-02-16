@@ -14,7 +14,8 @@ downsample = partial(interpolate, mode="nearest")  # for mixing mask
 upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.backends.cudnn.benchmark = True
+# device = torch.device('mps')
+# torch.backends.cudnn.benchmark = True
 
 
 def optimal_texture(
@@ -36,7 +37,7 @@ def optimal_texture(
 ):
     if seed is not None:
         torch.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
+        # torch.backends.cudnn.deterministic = True
 
     # readability booleans
     use_pca = not no_pca
@@ -50,6 +51,9 @@ def optimal_texture(
     styles = util.load_styles(style, size=sizes[0], scale=style_scale, oversize=oversize_style)
     content = util.maybe_load_content(content, size=sizes[0])
     output = torch.rand(content.shape if content is not None else (1, 3, sizes[0], sizes[0]), device=device)
+
+    # to device
+    styles = [style.to(device) for style in styles]
 
     # transform style and content to VGG feature space
     style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
@@ -85,6 +89,7 @@ def optimal_texture(
             if use_pca:
                 output_layer = output_layer @ style_eigvs[l]  # project onto principal components
 
+            # print(output_layer.device)
             for _ in range(iters_per_pass_and_layer[p, l - 1]):
                 output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
 
@@ -123,6 +128,9 @@ def optimal_transport(output_layer, style_layer, hist_mode):
 
     rotated_output = output_layer @ rotation
     rotated_style = style_layer @ rotation
+
+    # print(rotated_output.device)
+    # print(rotated_style.device)
 
     matched_output = hist_match(rotated_output, rotated_style, mode=hist_mode)
 
@@ -299,8 +307,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
 
-    torch.set_grad_enabled(False)
+    # torch.set_grad_enabled(False)
 
-    output = optimal_texture(**vars(args))
+    with torch.inference_mode():
+        output = optimal_texture(**vars(args))
 
     util.save_image(output, args)

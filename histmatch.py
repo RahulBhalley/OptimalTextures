@@ -3,6 +3,7 @@ import torch
 from PIL import Image
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device('mps')
 
 
 def hist_match(target, source, mode="pca", eps=1e-2):
@@ -30,8 +31,8 @@ def hist_match(target, source, mode="pca", eps=1e-2):
             matched = chol_s @ torch.inverse(chol_t) @ hist_t
 
         elif mode == "pca":
-            eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
-            # eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
+            # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+            eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
             # eva_s, eve_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
             eva_s, eve_s = torch.linalg.eigh(cov_s, UPLO='U')

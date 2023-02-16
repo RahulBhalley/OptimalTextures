@@ -34,7 +34,7 @@ def load_image(path, size, scale=1, no_quality_loss=True):
     size = round32(size)
     hsize = round32(hsize)
 
-    img = img.resize((int(size), hsize), Image.ANTIALIAS)
+    img = img.resize((int(size), hsize))#, Image.LANCZOS)
 
     return transforms.to_tensor(img).unsqueeze(0).to(device)
 
