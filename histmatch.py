@@ -6,6 +6,54 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # device = torch.device('mps')
 
 
+# def hist_match(target, source, mode="pca", eps=1e-2):
+#     target = target.permute(0, 3, 1, 2)  # -> b, c, h, w
+#     source = source.permute(0, 3, 1, 2)
+
+#     if mode == "cdf":
+#         b, c, h, w = target.shape
+#         matched = cdf_match(target.reshape(c, -1), source.reshape(c, -1)).reshape(b, c, h, w)
+
+#     else:
+#         # based on https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36
+
+#         mu_t = target.mean((2, 3), keepdim=True)
+#         hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
+#         cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=device)
+
+#         mu_s = source.mean((2, 3), keepdim=True)
+#         hist_s = (source - mu_s).view(source.size(1), -1)
+#         cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=device)
+
+#         if mode == "chol":
+#             chol_t = torch.linalg.cholesky(cov_t)
+#             chol_s = torch.linalg.cholesky(cov_s)
+#             matched = chol_s @ torch.inverse(chol_t) @ hist_t
+
+#         elif mode == "pca":
+#             # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+#             eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
+#             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
+#             # eva_s, eve_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
+#             eva_s, eve_s = torch.linalg.eigh(cov_s, UPLO='U')
+#             Qs = eve_s @ torch.sqrt(torch.diag(eva_s)) @ eve_s.T
+#             matched = Qs @ torch.inverse(Qt) @ hist_t
+
+#         elif mode == "sym":
+#             # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+#             eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
+#             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
+#             Qt_Cs_Qt = Qt @ cov_s @ Qt
+#             # eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, eigenvectors=True, upper=True)
+#             eva_QtCsQt, eve_QtCsQt = torch.linalg.eigh(Qt_Cs_Qt, UPLO='U')
+#             QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
+#             matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
+
+#         matched = matched.view(*target.shape) + mu_s
+
+#     return matched.permute(0, 2, 3, 1)  # -> b, h, w, c
+
+
 def hist_match(target, source, mode="pca", eps=1e-2):
     target = target.permute(0, 3, 1, 2)  # -> b, c, h, w
     source = source.permute(0, 3, 1, 2)
@@ -19,40 +67,58 @@ def hist_match(target, source, mode="pca", eps=1e-2):
 
         mu_t = target.mean((2, 3), keepdim=True)
         hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
-        cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=device)
+        cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=target.device)
 
         mu_s = source.mean((2, 3), keepdim=True)
         hist_s = (source - mu_s).view(source.size(1), -1)
-        cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=device)
+        cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=target.device)
 
         if mode == "chol":
             chol_t = torch.linalg.cholesky(cov_t)
             chol_s = torch.linalg.cholesky(cov_s)
-            matched = chol_s @ torch.inverse(chol_t) @ hist_t
+            matched = torch.linalg.solve(chol_t, chol_s @ hist_t)
 
         elif mode == "pca":
-            # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
-            eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
+            eva_t, eve_t = torch.linalg.eig(cov_t)
+            eva_t = eva_t.real
+            eve_t = eve_t.real
             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
-            # eva_s, eve_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
-            eva_s, eve_s = torch.linalg.eigh(cov_s, UPLO='U')
+            eva_s, eve_s = torch.linalg.eig(cov_s)
+            eva_s = eva_s.real
+            eve_s = eve_s.real
             Qs = eve_s @ torch.sqrt(torch.diag(eva_s)) @ eve_s.T
-            matched = Qs @ torch.inverse(Qt) @ hist_t
+            Qt_inv = torch.inverse(Qt)
+            matched = Qs @ Qt_inv @ hist_t
 
         elif mode == "sym":
-            # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+            # NOT OPTIMIZED AFTER.
+            
+            # # eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+            # eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
+            # Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
+            # Qt_Cs_Qt = Qt @ cov_s @ Qt
+            # # eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, eigenvectors=True, upper=True)
+            # eva_QtCsQt, eve_QtCsQt = torch.linalg.eigh(Qt_Cs_Qt, UPLO='U')
+            # QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
+            # matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
+
+            # Tried to optimize.
             eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO='U')
-            Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
-            Qt_Cs_Qt = Qt @ cov_s @ Qt
-            # eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, eigenvectors=True, upper=True)
+            Qt = torch.bmm(eve_t, torch.sqrt(torch.diag_embed(eva_t)))
+            Qt = torch.bmm(Qt, eve_t.transpose(1,2))
+            Qt_Cs_Qt = torch.bmm(Qt, cov_s)
+            Qt_Cs_Qt = torch.bmm(Qt_Cs_Qt, Qt.transpose(1,2))
             eva_QtCsQt, eve_QtCsQt = torch.linalg.eigh(Qt_Cs_Qt, UPLO='U')
-            QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
-            matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
+            QtCsQt = torch.bmm(eve_QtCsQt, torch.sqrt(torch.diag_embed(eva_QtCsQt)))
+            QtCsQt = torch.bmm(QtCsQt, eve_QtCsQt.transpose(1,2))
+            inv_Qt = torch.inverse(Qt)
+            matched = torch.bmm(inv_Qt, hist_t)
+            matched = torch.bmm(QtCsQt, matched)
+            matched = torch.bmm(inv_Qt, matched)
 
         matched = matched.view(*target.shape) + mu_s
 
     return matched.permute(0, 2, 3, 1)  # -> b, h, w, c
-
 
 def cdf_match(target, source, bins=256):
     matched = torch.empty_like(target)
