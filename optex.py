@@ -10,6 +10,8 @@ from histmatch import *
 from vgg import Decoder, Encoder
 from kornia.color.hls import rgb_to_hls, hls_to_rgb
 
+import time
+
 downsample = partial(interpolate, mode="nearest")  # for mixing mask
 upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
 
@@ -72,10 +74,15 @@ def optimal_texture(
             content = util.maybe_load_content(args.content, size=sizes[p])
 
             # upsample to next size
+            # print("***** upsample to next size *****")
             output = upsample(output, size=content.shape[2:] if content is not None else (sizes[p], sizes[p]))
 
             # get style and content target features
+            # print("get style and content target features")
+            # s = time.time()
             style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+            # e = time.time()
+            # print(f"took: {e - s} sec")
 
             if texture_mixing:
                 style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
@@ -84,6 +91,7 @@ def optimal_texture(
             pbar.set_description(f"Current resolution: {sizes[p if use_multires else 0]}, current layer relu{l}_1")
 
             # encode layer to VGG feature space
+            # print("encode layer to VGG feature space")
             with Encoder(l).to(device) as encoder:
                 output_layer = encoder(output)
             if use_pca:
@@ -94,6 +102,7 @@ def optimal_texture(
                 output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
 
                 # apply content matching step
+                # print("apply content matching step")
                 if content is not None and l >= 3:
                     strength = content_strength
                     strength /= 2 ** (5 - l)  # 1, 2, or 4 depending on layer depth
@@ -104,6 +113,7 @@ def optimal_texture(
             if use_pca:
                 output_layer = output_layer @ style_eigvs[l].T  # reverse principal component projection
             with Decoder(l).to(device) as decoder:
+                # print("decode back to image space")
                 output = decoder(output_layer)  # decode back to image space
 
     if color_transfer is not None:
@@ -189,26 +199,44 @@ def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
     return style_layers
 
 
-def random_rotation(N):
+# def random_rotation(N):
+#     """
+#     Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
+
+#     From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
+#     """
+#     H = torch.eye(N, device=device)
+#     D = torch.empty((N,), device=device)
+#     for n in range(N - 1):
+#         x = torch.randn(N - n, device=device)
+#         norm2 = x @ x
+#         x0 = x[0].item()
+#         D[n] = torch.sign(x[0]) if x[0] != 0 else 1
+#         x[0] += D[n] * torch.sqrt(norm2)
+#         x /= torch.sqrt((norm2 - x0 ** 2 + x[0] ** 2) / 2.0)
+#         H[:, n:] -= torch.outer(H[:, n:] @ x, x)
+#     D[-1] = (-1) ** (N - 1) * D[:-1].prod()
+#     H = (D * H.T).T
+#     return H
+
+def random_rotation(N: int):
     """
     Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
-
-    From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
     """
+
     H = torch.eye(N, device=device)
     D = torch.empty((N,), device=device)
     for n in range(N - 1):
         x = torch.randn(N - n, device=device)
-        norm2 = x @ x
-        x0 = x[0].item()
-        D[n] = torch.sign(x[0]) if x[0] != 0 else 1
+        norm2 = torch.dot(x, x)
+        x0 = x[0].clone()
+        D[n] = torch.sign(torch.sign(x[0]) + 0.5)
         x[0] += D[n] * torch.sqrt(norm2)
-        x /= torch.sqrt((norm2 - x0 ** 2 + x[0] ** 2) / 2.0)
-        H[:, n:] -= torch.outer(H[:, n:] @ x, x)
+        x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
+        H[:, n:] -= torch.ger(H[:, n:] @ x, x)
     D[-1] = (-1) ** (N - 1) * D[:-1].prod()
     H = (D * H.T).T
     return H
-
 
 def get_iters_and_sizes(size, iters, passes, use_multires):
     # more iterations for smaller sizes and deeper layers
@@ -309,7 +337,20 @@ if __name__ == "__main__":
 
     # torch.set_grad_enabled(False)
 
-    with torch.inference_mode():
-        output = optimal_texture(**vars(args))
+    # with torch.profiler.profile(
+    #     schedule=torch.profiler.schedule(
+    #         wait=2,
+    #         warmup=2,
+    #         active=6,
+    #         repeat=1),
+    #     on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/model'),
+    #     with_stack=True
+    # ) as profiler:
+    with torch.profiler.profile(
+                    schedule=torch.profiler.schedule(wait=2, warmup=2, active=6, repeat=1), on_trace_ready=torch.profiler.tensorboard_trace_handler('trace')
+            ) as profiler:
+        with torch.inference_mode():
+            output = optimal_texture(**vars(args))
+            profiler.step()
 
     util.save_image(output, args)
