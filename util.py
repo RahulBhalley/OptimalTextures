@@ -9,6 +9,8 @@ from PIL import Image
 from torch import Tensor
 from torch.nn.functional import interpolate
 
+RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
+
 
 def load_styles(style_files, size, scale, oversize=False, device="cpu", memory_format=torch.contiguous_format):
     styles = []
@@ -26,7 +28,7 @@ def maybe_load_content(content_file, size, device="cpu", memory_format=torch.con
 
 def load_image(path, size, scale=1, oversize=True, device="cpu", memory_format=torch.contiguous_format):
     img = Image.open(path).convert(mode="RGB")
-    img = img.resize(get_size(size, scale, img.size[0], img.size[1], oversize), Image.ANTIALIAS)
+    img = img.resize(get_size(size, scale, img.size[0], img.size[1], oversize), RESAMPLE_LANCZOS)
     return transforms.to_tensor(img).unsqueeze(0).to(device, memory_format=memory_format)
 
 
@@ -77,7 +79,7 @@ def get_iters_and_sizes(size: int, iters: int, passes: int, use_multires: bool):
         sizes = (32 * np.round(sizes / 32)).astype(np.int32)
     else:
         iters_per_pass = np.ones(passes) * int(iters / passes)
-        sizes = [size] * passes
+        sizes = np.array([size] * passes)
 
     proportion_per_layer = np.array([64, 128, 256, 512, 512]) + 64
     proportion_per_layer = proportion_per_layer / np.sum(proportion_per_layer)
