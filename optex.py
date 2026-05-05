@@ -9,7 +9,6 @@ from torch.nn.functional import interpolate
 from histmatch import hist_match
 from util import get_iters_and_sizes, get_size, load_styles, maybe_load_content, resize, save_image, to_nchw, to_nhwc
 from vgg import Decoder, Encoder
-from scipy.stats import special_ortho_group
 
 
 class OptimalTexture(torch.nn.Module):
@@ -109,8 +108,14 @@ class OptimalTexture(torch.nn.Module):
                 if self.use_pca:
                     pastiche_feature = pastiche_feature @ style_eigvs[l]  # project onto principal components
 
-                for _ in range(self.iters_per_pass_and_layer[p][l - 1]):
-                    pastiche_feature = optimal_transport(pastiche_feature, style_features[l], self.hist_mode)
+                rotations = random_rotations(
+                    self.iters_per_pass_and_layer[p][l - 1],
+                    pastiche_feature.shape[-1],
+                    device=pastiche_feature.device,
+                    dtype=pastiche_feature.dtype,
+                )
+                for rotation in rotations:
+                    pastiche_feature = optimal_transport(pastiche_feature, style_features[l], self.hist_mode, rotation)
 
                     if len(content_features) > 0 and l <= 2:  # apply content matching step
                         strength = self.content_strength / 2 ** (4 - l)  # 1, 2, or 4 depending on feature depth
@@ -139,34 +144,75 @@ class OptimalTexture(torch.nn.Module):
         return pastiche
 
 
-def random_rotation(N: int, device: str = "cpu", impl: str = "scipy"):
+def resolve_device(requested: Optional[str] = None, size: int = 512) -> str:
+    if requested is not None:
+        if requested == "mps" and not torch.backends.mps.is_available():
+            raise RuntimeError("MPS was requested, but torch.backends.mps.is_available() is false.")
+        if requested == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested, but torch.cuda.is_available() is false.")
+        return requested
+
+    if torch.backends.mps.is_available() and size >= 256:
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
+def apply_preset(args: argparse.Namespace) -> argparse.Namespace:
+    if args.preset is None:
+        return args
+
+    presets = {
+        "fast": {"passes": 1, "iters": 80, "no_multires": True, "hist_mode": "chol"},
+        "balanced": {"passes": 3, "iters": 250, "no_multires": False, "hist_mode": "chol"},
+        "quality": {"passes": 5, "iters": 500, "no_multires": False, "hist_mode": "chol"},
+    }
+    for key, value in presets[args.preset].items():
+        setattr(args, key, value)
+    return args
+
+
+def resolve_memory_format(memory_format: str, device: str, size: int):
+    if memory_format == "auto":
+        memory_format = "channels_last" if device == "cpu" or (device == "mps" and size >= 256) else "contiguous"
+    return torch.contiguous_format if memory_format == "contiguous" else torch.channels_last
+
+
+def random_rotation(N: int, device: torch.device, dtype: torch.dtype):
     """
-    Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
-    From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
+    Draws a random N-dimensional rotation matrix on the target torch device.
     """
 
-    if impl == "scipy":
-        return torch.tensor(special_ortho_group.rvs(N), device=device)
+    target_device = device
+    if device.type == "mps":
+        device = torch.device("cpu")
 
-    else:  # impl == 'torch'
-        H = torch.eye(N, device=device)
-        D = torch.empty((N,), device=device)
-        for n in range(N - 1):
-            x = torch.randn(N - n, device=device)
-            norm2 = x @ x
-            x0 = x[0].clone()
-            D[n] = torch.sign(torch.sign(x[0]) + 0.5)
-            x[0] += D[n] * torch.sqrt(norm2)
-            x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
-            H[:, n:] -= torch.outer(H[:, n:] @ x, x)
-        D[-1] = (-1) ** (N - 1) * D[:-1].prod()
-        H = (D * H.T).T
-        return H
+    q, r = torch.linalg.qr(torch.randn((N, N), device=device, dtype=dtype))
+    signs = torch.sign(torch.diagonal(r))
+    signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+    q = q * signs
+    if torch.linalg.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    return q.to(device=target_device, dtype=dtype)
 
 
-def optimal_transport(pastiche_feature: Tensor, style_feature: Tensor, hist_mode: str):
-    rotation = random_rotation(pastiche_feature.shape[-1]).to(pastiche_feature)
+def random_rotations(count: int, N: int, device: torch.device, dtype: torch.dtype):
+    if count == 0:
+        return ()
 
+    generation_device = torch.device("cpu") if device.type == "mps" else device
+    rotations = torch.stack([random_rotation(N, generation_device, dtype) for _ in range(count)])
+    return rotations.to(device=device, dtype=dtype)
+
+
+def optimal_transport(pastiche_feature: Tensor, style_feature: Tensor, hist_mode: str, rotation: Optional[Tensor] = None):
+    if rotation is None:
+        rotation = random_rotation(
+            pastiche_feature.shape[-1],
+            device=pastiche_feature.device,
+            dtype=pastiche_feature.dtype,
+        )
     rotated_pastiche = pastiche_feature @ rotation
     rotated_style = style_feature @ rotation
 
@@ -238,17 +284,19 @@ if __name__ == "__main__":
     parser.add_argument("--cudnn_benchmark", action="store_true", help="Enable CUDNN benchmarking (probably slower unless doing a high number of iterations).")
     parser.add_argument("--compile", action="store_true", help="Use PyTorch 2.0 compile function to optimize the model.")
     parser.add_argument("--script", action="store_true", help="Use PyTorch JIT script function to optimize the model.")
+    parser.add_argument("--preset", type=str, choices=["fast", "balanced", "quality"], default=None, help="Apply benchmark-backed speed/quality settings.")
     parser.add_argument("--device", type=str, default=None, help="Which device to run on.")
-    parser.add_argument("--memory_format", type=str, default="contiguous", choices=["contiguous", "channels_last"], help="Which memory format to use for optimization.")
+    parser.add_argument("--memory_format", type=str, default="auto", choices=["auto", "contiguous", "channels_last"], help="Which memory format to use for optimization.")
     parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
     # fmt: on
+    args = apply_preset(args)
 
     torch.backends.cudnn.benchmark = args.cudnn_benchmark
     torch.backends.cudnn.allow_tf32 = not args.no_tf32
     torch.backends.cuda.matmul.allow_tf32 = not args.no_tf32
-    memory_format = torch.contiguous_format if args.memory_format == "contiguous" else torch.channels_last
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_device(args.device, args.size)
+    memory_format = resolve_memory_format(args.memory_format, device, args.size)
 
     if args.seed is not None:
         torch.manual_seed(args.seed)

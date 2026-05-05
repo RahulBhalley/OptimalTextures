@@ -24,14 +24,14 @@ def hist_match(target: Tensor, source: Tensor, mode: str = "chol", eps: float = 
         if mode == "chol":
             chol_t = torch.linalg.cholesky(cov_t)
             chol_s = torch.linalg.cholesky(cov_s)
-            matched = chol_s @ torch.inverse(chol_t) @ hist_t
+            matched = chol_s @ torch.linalg.solve_triangular(chol_t, hist_t, upper=False)
 
         elif mode == "pca":
             eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO="U")
             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
             eva_s, eve_s = torch.linalg.eigh(cov_s, UPLO="U")
             Qs = eve_s @ torch.sqrt(torch.diag(eva_s)) @ eve_s.T
-            matched = Qs @ torch.inverse(Qt) @ hist_t
+            matched = Qs @ torch.linalg.solve(Qt, hist_t)
 
         else:  # mode == "sym"
             eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO="U")
@@ -39,7 +39,7 @@ def hist_match(target: Tensor, source: Tensor, mode: str = "chol", eps: float = 
             Qt_Cs_Qt = Qt @ cov_s @ Qt
             eva_QtCsQt, eve_QtCsQt = torch.linalg.eigh(Qt_Cs_Qt, UPLO="U")
             QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
-            matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
+            matched = torch.linalg.solve(Qt, QtCsQt @ torch.linalg.solve(Qt, hist_t))
 
         matched = matched.view(c, b, h, w) + mu_s
 

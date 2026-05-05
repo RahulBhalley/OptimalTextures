@@ -13,6 +13,30 @@ pip install -r requirements.txt
 python optex.py -h
 ```
 
+## Apple Silicon benchmarking
+
+For Apple M-series Macs, benchmark CPU against Metal Performance Shaders with:
+
+```bash
+python benchmark.py --devices cpu mps --sizes 128 256 --repeats 3
+```
+
+The benchmark enables `PYTORCH_MPS_FAST_MATH=1` and `PYTORCH_MPS_PREFER_METAL=1` for MPS runs by default. Use `--no_mps_fast_math` to compare the unmodified MPS backend behavior.
+
+To compare memory layout and inference wrappers:
+
+```bash
+python benchmark.py --devices cpu mps --variants baseline channels_last script --sizes 128 256 --repeats 3
+```
+
+The `compile` variant is available, but it has a large first-run compilation cost in this CLI workflow. Use it only when benchmarking a persistent process where compile time can be amortized.
+
+For fastest preview inference, use the fast preset:
+
+```bash
+PYTORCH_MPS_FAST_MATH=1 PYTORCH_MPS_PREFER_METAL=1 python optex.py --preset fast --memory_format auto --size 256 --style style/lava-small.jpg --content content/rocket.jpg
+```
+
 ## Texture synthesis
 
 Generate a texture based on an example:
